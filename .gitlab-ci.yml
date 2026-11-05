@@ -1,0 +1,65 @@
+# GitLab CI pipeline for the Order Management API (the Maven project lives in backend/).
+#
+# Stages: build -> test -> package.
+# Not implemented here on purpose (see documentation/design.md, section 11): image publishing, dependency
+# scanning, deployment to a test environment, post-deploy health check and rollback.
+
+stages:
+  - build
+  - test
+  - package
+
+default:
+  image: eclipse-temurin:17-jdk
+  # Cache the Maven repository between jobs and pipelines. The key changes when the dependencies change.
+  cache:
+    key:
+      files:
+        - backend/pom.xml
+    paths:
+      - .m2/repository
+
+variables:
+  # The cache can only contain files inside the project directory.
+  MAVEN_OPTS: "-Dmaven.repo.local=$CI_PROJECT_DIR/.m2/repository"
+  MVN: "./mvnw -B -ntp"
+
+compile:
+  stage: build
+  script:
+    - cd backend
+    - $MVN -DskipTests compile
+
+# The integration tests start PostgreSQL with Testcontainers, so this job needs a Docker daemon.
+# A Docker-in-Docker service provides it (the runner must allow privileged containers for this).
+test:
+  stage: test
+  services:
+    - name: docker:27-dind
+      alias: docker
+      # Plain TCP without TLS is acceptable here: the daemon is only reachable by this job's own network.
+      command: ["--tls=false"]
+  variables:
+    DOCKER_HOST: tcp://docker:2375
+    DOCKER_TLS_CERTDIR: ""
+    DOCKER_DRIVER: overlay2
+    # Testcontainers must reach the started containers through the dind host, not through localhost.
+    TESTCONTAINERS_HOST_OVERRIDE: docker
+  script:
+    - cd backend
+    - $MVN verify
+  artifacts:
+    when: always
+    expire_in: 1 week
+    reports:
+      junit: backend/target/surefire-reports/TEST-*.xml
+
+package:
+  stage: package
+  script:
+    - cd backend
+    - $MVN -DskipTests package
+  artifacts:
+    expire_in: 1 week
+    paths:
+      - backend/target/order-management-api-*.jar
