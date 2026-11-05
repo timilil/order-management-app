@@ -1,6 +1,6 @@
 # Order Management API - Design Document
 
-Status: draft. Sections 1-3 are complete. The remaining sections are filled in as the implementation progresses.
+Status: draft. Sections 1-4 are complete. The remaining sections are filled in as the implementation progresses.
 
 ## 1. Understanding of the requirements
 
@@ -23,7 +23,7 @@ The brief leaves some things open and allows reasonable assumptions as long as t
 - Users log in with `POST /api/auth/login`. The credentials are checked against a `users` table that stores BCrypt password hashes, and the API returns a short-lived JWT.
 - Every other request is validated by Spring Security from that token. This keeps authentication (who you are) apart from authorization (what you may do).
 - The user ID and role always come from the token, never from the request body.
-- The signing secret is read from an environment variable and is never committed.
+- The signing secret is read from an environment variable and is never committed. The `dev` and `test` profiles contain clearly fake, non-production secrets so the project runs out of the box. The base configuration has no default, so a production start without `JWT_SECRET` fails.
 - Sample users exist only in the `dev` and `test` setups, with obviously fake passwords. Production has none, so the dev setup can't be mistaken for real authentication.
 - There is no separate customer entity. An order's customer ID is simply the logged-in user's ID.
 
@@ -102,7 +102,32 @@ Orders are always assigned to the authenticated user. Creating orders on behalf 
 | any other combination | - | rejected with 409 |
 
 ## 4. Architecture
-TODO.
+
+A layered Spring Boot application, packaged by layer under `com.example.orders`. A request flows top to bottom, and each layer only calls the one below it.
+
+| Package | Responsibility |
+|---------|----------------|
+| `api` | REST controllers and request/response DTOs. Maps HTTP to service calls. No business logic and no entities in responses. |
+| `service` | Business rules: total calculation, ownership checks, status transitions, transaction boundaries. |
+| `domain` | JPA entities (`Order`, `OrderItem`, `User`) and the `OrderStatus` enum with its transition rules. |
+| `repository` | Spring Data JPA repositories. |
+| `security` | Login, JWT issuing and validation, Spring Security filter chain, 401 and 403 handlers. |
+| `config` | OpenAPI configuration and typed configuration properties. |
+| `error` | `ErrorResponse` DTO, custom exceptions and the global `@RestControllerAdvice`. |
+
+Why layers: the application is small, the responsibilities are easy to name, and each layer can be tested on its own (domain and service logic with plain unit tests, the API with integration tests).
+
+### Technology baseline
+- Java 17, Spring Boot 3.5, Maven (wrapper included, run with `./mvnw`).
+- Spring Web, Spring Data JPA (Hibernate), Bean Validation, Spring Security with the OAuth2 resource server (JWT).
+- PostgreSQL with Liquibase migrations. Hibernate only validates the schema (`ddl-auto: validate`), Liquibase owns it.
+- `springdoc-openapi` for the API docs, Actuator for the health endpoint.
+- JUnit 5, Spring Security Test and Testcontainers (PostgreSQL 16) for tests.
+
+### Configuration
+- Configuration comes from environment variables (`DB_URL`, `DB_USERNAME`, `DB_PASSWORD`, `JWT_SECRET`). The base `application.yml` has no defaults for them, so the application fails to start if they are missing.
+- Profiles: `dev` provides fake local defaults and enables Swagger UI. `test` is used by the automated tests. A production run supplies real values through the environment and enables neither.
+- `open-in-view` is off, so database access stays inside the service layer. Error stack traces and messages are never included in Spring's default error output.
 
 ## 5. API design
 TODO. Include sample requests and responses for each endpoint, and point to the generated OpenAPI spec and Swagger UI (see "API documentation" in section 2).

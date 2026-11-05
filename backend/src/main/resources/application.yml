@@ -1,0 +1,53 @@
+spring:
+  application:
+    name: order-management-api
+  datasource:
+    # Provided through environment variables. No defaults on purpose: nothing sensitive is committed.
+    url: ${DB_URL}
+    username: ${DB_USERNAME}
+    password: ${DB_PASSWORD}
+  jpa:
+    open-in-view: false
+    hibernate:
+      ddl-auto: validate
+  liquibase:
+    change-log: classpath:db/changelog/db.changelog-master.yaml
+  data:
+    web:
+      pageable:
+        default-page-size: 20
+        max-page-size: 100
+
+app:
+  security:
+    jwt:
+      # HS256 signing secret, at least 32 bytes. Provided through the environment, never committed.
+      secret: ${JWT_SECRET}
+      expiration-minutes: 30
+
+# Actuator. Only the health endpoint is reachable over HTTP (/actuator/health). 
+# Used by the Docker Compose healthcheck and the deployment health check.
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health
+  endpoint:
+    health:
+      # Return only {"status":"UP"}. Details (database, disk space) are not shown to callers.
+      show-details: never
+
+# OpenAPI docs are off by default (production). The dev and test profiles enable them.
+springdoc:
+  api-docs:
+    enabled: false
+  swagger-ui:
+    enabled: false
+
+# Applies to Spring Boot's fallback /error page, which handles failures that never reach the global
+# @RestControllerAdvice (for example unmapped paths or errors raised inside the servlet container).
+server:
+  error:
+    include-stacktrace: never
+    include-message: never
+    include-binding-errors: never

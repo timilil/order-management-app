@@ -1,0 +1,16 @@
+# Test profile. The datasource comes from Testcontainers (@ServiceConnection).
+app:
+  security:
+    jwt:
+      secret: test-only-secret-test-only-secret-test-only-secret
+      expiration-minutes: 5
+
+spring:
+  liquibase:
+    contexts: test
+
+springdoc:
+  api-docs:
+    enabled: true
+  swagger-ui:
+    enabled: true

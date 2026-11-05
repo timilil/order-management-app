@@ -1,0 +1,19 @@
+# Local development only. These values are fake and must never be used in a real environment.
+spring:
+  datasource:
+    url: ${DB_URL:jdbc:postgresql://localhost:5432/orders}
+    username: ${DB_USERNAME:orders_dev}
+    password: ${DB_PASSWORD:orders_dev_password}
+  liquibase:
+    contexts: dev
+
+app:
+  security:
+    jwt:
+      secret: ${JWT_SECRET:dev-only-secret-change-me-dev-only-secret-change-me}
+
+springdoc:
+  api-docs:
+    enabled: true
+  swagger-ui:
+    enabled: true

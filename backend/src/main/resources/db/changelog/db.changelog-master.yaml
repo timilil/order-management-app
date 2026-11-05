@@ -1,0 +1,2 @@
+databaseChangeLog: []
+# Changesets are added in the database step (users, orders, order_items).
