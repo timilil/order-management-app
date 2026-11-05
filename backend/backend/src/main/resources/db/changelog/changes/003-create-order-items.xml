@@ -1,0 +1,51 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<databaseChangeLog
+        xmlns="http://www.liquibase.org/xml/ns/dbchangelog"
+        xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+        xsi:schemaLocation="http://www.liquibase.org/xml/ns/dbchangelog
+                            http://www.liquibase.org/xml/ns/dbchangelog/dbchangelog-4.31.xsd">
+
+    <!--
+        Items are deleted together with their order (hard delete of an order, see design section 2).
+        unit_price is NUMERIC(10,2): up to 99,999,999.99. The API enforces 0.01 or more; the CHECK is a safety net.
+    -->
+    <changeSet id="003-create-order-items" author="orders">
+        <createTable tableName="order_items">
+            <column name="id" type="UUID">
+                <constraints primaryKey="true" primaryKeyName="pk_order_items" nullable="false"/>
+            </column>
+            <column name="order_id" type="UUID">
+                <constraints nullable="false"/>
+            </column>
+            <column name="product_id" type="VARCHAR(50)">
+                <constraints nullable="false"/>
+            </column>
+            <column name="product_name" type="VARCHAR(200)">
+                <constraints nullable="false"/>
+            </column>
+            <column name="quantity" type="INTEGER">
+                <constraints nullable="false"/>
+            </column>
+            <column name="unit_price" type="NUMERIC(10,2)">
+                <constraints nullable="false"/>
+            </column>
+        </createTable>
+
+        <addForeignKeyConstraint constraintName="fk_order_items_order"
+                                 baseTableName="order_items" baseColumnNames="order_id"
+                                 referencedTableName="orders" referencedColumnNames="id"
+                                 onDelete="CASCADE"/>
+
+        <sql>ALTER TABLE order_items ADD CONSTRAINT ck_order_items_quantity CHECK (quantity > 0 AND quantity &lt;= 1000)</sql>
+        <sql>ALTER TABLE order_items ADD CONSTRAINT ck_order_items_unit_price CHECK (unit_price > 0)</sql>
+
+        <createIndex indexName="idx_order_items_order_id" tableName="order_items">
+            <column name="order_id"/>
+        </createIndex>
+
+        <rollback>
+            <dropTable tableName="order_items"/>
+        </rollback>
+    </changeSet>
+
+</databaseChangeLog>

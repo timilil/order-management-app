@@ -1,0 +1,50 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<databaseChangeLog
+        xmlns="http://www.liquibase.org/xml/ns/dbchangelog"
+        xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+        xsi:schemaLocation="http://www.liquibase.org/xml/ns/dbchangelog
+                            http://www.liquibase.org/xml/ns/dbchangelog/dbchangelog-4.31.xsd">
+
+    <!--
+        FAKE USERS FOR LOCAL DEVELOPMENT AND TESTS ONLY. All four share the password "dev-password-1".
+        This changeset only runs when the Liquibase context is "dev" or "test". The base configuration
+        sets the context to "prod", so these users are never created in a production database.
+    -->
+    <changeSet id="004-seed-dev-users" author="orders" context="dev,test">
+        <insert tableName="users">
+            <column name="id" value="11111111-1111-1111-1111-111111111111"/>
+            <column name="username" value="customer1"/>
+            <column name="password_hash" value="$2y$10$KOTFG.6YcwJ7Vfr4RYWXHecP9XW.rwLuqKyEyxFvVLdeh9saTZuuS"/>
+            <column name="role" value="CUSTOMER"/>
+            <column name="created_at" valueComputed="CURRENT_TIMESTAMP"/>
+        </insert>
+        <insert tableName="users">
+            <column name="id" value="22222222-2222-2222-2222-222222222222"/>
+            <column name="username" value="customer2"/>
+            <column name="password_hash" value="$2y$10$KOTFG.6YcwJ7Vfr4RYWXHecP9XW.rwLuqKyEyxFvVLdeh9saTZuuS"/>
+            <column name="role" value="CUSTOMER"/>
+            <column name="created_at" valueComputed="CURRENT_TIMESTAMP"/>
+        </insert>
+        <insert tableName="users">
+            <column name="id" value="33333333-3333-3333-3333-333333333333"/>
+            <column name="username" value="support1"/>
+            <column name="password_hash" value="$2y$10$KOTFG.6YcwJ7Vfr4RYWXHecP9XW.rwLuqKyEyxFvVLdeh9saTZuuS"/>
+            <column name="role" value="SUPPORT"/>
+            <column name="created_at" valueComputed="CURRENT_TIMESTAMP"/>
+        </insert>
+        <insert tableName="users">
+            <column name="id" value="44444444-4444-4444-4444-444444444444"/>
+            <column name="username" value="admin1"/>
+            <column name="password_hash" value="$2y$10$KOTFG.6YcwJ7Vfr4RYWXHecP9XW.rwLuqKyEyxFvVLdeh9saTZuuS"/>
+            <column name="role" value="ADMIN"/>
+            <column name="created_at" valueComputed="CURRENT_TIMESTAMP"/>
+        </insert>
+
+        <rollback>
+            <delete tableName="users">
+                <where>username IN ('customer1', 'customer2', 'support1', 'admin1')</where>
+            </delete>
+        </rollback>
+    </changeSet>
+
+</databaseChangeLog>

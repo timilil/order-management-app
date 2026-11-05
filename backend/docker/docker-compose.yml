@@ -1,0 +1,58 @@
+# Local development: PostgreSQL, and optionally the application. Copy docker/.env.example to docker/.env first.
+#
+#   Database only (run the app from your IDE or with ./mvnw):
+#     docker compose -f docker/docker-compose.yml --env-file docker/.env up -d postgres
+#   Database and application (builds the image from backend/Dockerfile):
+#     docker compose -f docker/docker-compose.yml --env-file docker/.env up -d --build
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: orders-postgres
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:?set POSTGRES_DB in docker/.env}
+      POSTGRES_USER: ${POSTGRES_USER:?set POSTGRES_USER in docker/.env}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in docker/.env}
+    ports:
+      # Bound to localhost only, the database is not reachable from other machines.
+      - "127.0.0.1:${POSTGRES_PORT:-5432}:5432"
+    volumes:
+      # Named volume: data survives container restarts and "docker compose down".
+      - orders-pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    restart: unless-stopped
+
+  app:
+    build:
+      context: ../backend
+    image: order-management-api:local
+    container_name: orders-app
+    depends_on:
+      postgres:
+        # Wait until the database accepts connections. Liquibase then creates the schema on startup.
+        condition: service_healthy
+    environment:
+      # Inside the Compose network the database host is the service name, and the port is always 5432.
+      DB_URL: jdbc:postgresql://postgres:5432/${POSTGRES_DB}
+      DB_USERNAME: ${POSTGRES_USER}
+      DB_PASSWORD: ${POSTGRES_PASSWORD}
+      # LOCAL DEMO ONLY. The "dev" profile creates the fake sample users (password dev-password-1) and
+      # enables Swagger UI. A real deployment leaves the profile unset and has no users or API docs.
+      SPRING_PROFILES_ACTIVE: dev
+    ports:
+      - "127.0.0.1:8080:8080"
+    # The container does not need to write anywhere except /tmp, and needs no extra privileges.
+    read_only: true
+    tmpfs:
+      - /tmp
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    restart: unless-stopped
+
+volumes:
+  orders-pgdata:
