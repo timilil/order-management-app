@@ -310,7 +310,52 @@ Public endpoints: `POST /api/auth/login`, `GET /actuator/health`, and the OpenAP
 - Passwords are limited to 72 bytes, the input limit of BCrypt.
 
 ## 8. Error handling and transaction boundaries
-TODO. Describe the `ErrorResponse` DTO, the single `@RestControllerAdvice`, and the Spring Security entry point and access-denied handler that reuse the same DTO.
+
+### One error shape
+Every error response, whoever produces it, has the `ErrorResponse` JSON body:
+
+```json
+{"status": 404, "error": "ORDER_NOT_FOUND", "message": "Order not found.",
+ "timestamp": "2026-11-05T09:30:00.123456Z", "path": "/api/orders/5b0a3c1e-..."}
+```
+
+- `error` is a stable code for clients to branch on. `message` is for people.
+- `fieldErrors` (a list of `{field, message}`) is present only for `VALIDATION_FAILED` and is omitted otherwise.
+- `timestamp` comes from the injected `Clock`. `path` is the request path.
+
+### Who produces it
+- **`GlobalExceptionHandler`** (`@RestControllerAdvice` in `error`) handles everything that reaches the controllers. It extends Spring's `ResponseEntityExceptionHandler`, so Spring's own web exceptions (wrong method, wrong media type, unknown path, missing parameter) get the same shape.
+- **The security layer** (`RestAuthenticationEntryPoint`, `RestAccessDeniedHandler`) handles `401` and `403` raised in the filter chain, before any controller. It uses `ErrorResponseWriter` to write the same body. Controllers and services can also throw `AccessDeniedException` (for example the role checks in `OrderService`). The advice maps those to the same `403`, and without that mapping the catch-all would turn them into a `500`.
+
+### Mapping
+
+| Situation | Status | `error` code |
+|-----------|--------|--------------|
+| Bean Validation failure on the body | 400 | `VALIDATION_FAILED` (with `fieldErrors`) |
+| Malformed JSON, wrong field type, unknown enum value, missing body | 400 | `MALFORMED_REQUEST` |
+| Bad path or query value (such as a non-UUID ID), disallowed sort field, other bad requests | 400 | `INVALID_REQUEST` |
+| No valid token, or wrong username or password | 401 | `UNAUTHORIZED` |
+| Role not allowed | 403 | `FORBIDDEN` |
+| Order missing, or belonging to someone else | 404 | `ORDER_NOT_FOUND` |
+| Unknown path | 404 | `NOT_FOUND` |
+| Method not supported (with `Allow` header) | 405 | `METHOD_NOT_ALLOWED` |
+| Media type not supported | 415 | `UNSUPPORTED_MEDIA_TYPE` |
+| Status change not allowed from the current status | 409 | `INVALID_STATUS_TRANSITION` |
+| Two people changed the same order at once (optimistic lock) | 409 | `CONCURRENT_MODIFICATION` |
+| Anything else | 500 | `INTERNAL_ERROR` |
+
+### Not leaking internals
+- Messages are written in the handler, not copied from exceptions. The exceptions are the ones written for clients: the invalid-transition message (it only names two statuses) and the sort-field message.
+- A `404` for a missing order and for another customer's order is identical, so IDs cannot be probed.
+- Malformed JSON never shows the parser message, which can include class names. Validation errors name the field and the rule only.
+- The catch-all returns a generic `500` message. The full exception with its stack trace is logged on the server only.
+- Spring Boot's fallback `/error` page is configured to hide stack traces, messages and binding errors, in case an error happens outside the advice.
+
+### Invalid status transitions: 409, not 422
+`409 Conflict` was chosen because the request is well formed but conflicts with the current state of the order. The same code is used for a lost update, which is the same kind of problem: the order is not in the state the client assumed.
+
+### Transaction boundaries
+Each `OrderService` method is one transaction, and reads are `readOnly`. Login and logout are not wrapped in a long transaction, because BCrypt is slow on purpose. An exception thrown inside a service method rolls the transaction back, so a rejected status change or a failed create leaves no partial data. Exceptions are turned into HTTP responses after that, in the advice, outside the transaction. The `version` column makes a concurrent change fail with `CONCURRENT_MODIFICATION` instead of silently overwriting it.
 
 ## 9. Design decisions and trade-offs
 TODO.

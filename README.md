@@ -2,7 +2,7 @@
 
 A small REST API for creating and managing orders, built with Java 17 and Spring Boot 3.5. Customers create and view their own orders, support staff view all orders and move them through their lifecycle, and admins can additionally delete orders. Data is stored in PostgreSQL, with schema changes managed by Liquibase.
 
-> **Status: work in progress.** The database layer, project setup, the domain model, the order endpoints and security (login, sessions, logout, role rules with `@PreAuthorize`, 401 and 403 responses) are done. The remaining error responses (for example validation errors and "not found" in the standard JSON format), the container image and the CI pipeline are not implemented yet. Sections marked *(coming)* describe what will be added.
+> **Status: work in progress.** The database layer, project setup, the domain model, the order endpoints and security (login, sessions, logout, role rules with `@PreAuthorize`, 401 and 403 responses) are done. Error responses use one JSON format everywhere. The container image and the CI pipeline are not implemented yet. Sections marked *(coming)* describe what will be added.
 
 The design, assumptions and trade-offs are in [documentation/design.md](documentation/design.md).
 
@@ -16,7 +16,7 @@ The design, assumptions and trade-offs are in [documentation/design.md](document
 
 | Path | Contents |
 |------|----------|
-| `backend/` | Spring Boot application (Maven project). Code is in `com.example.orders`, packaged by layer: `api`, `service`, `domain`, `repository`, `security`, `config`, `error`. `security` and `error` are only partly filled in so far. |
+| `backend/` | Spring Boot application (Maven project). Code is in `com.example.orders`, packaged by layer: `api`, `service`, `domain`, `repository`, `security`, `config`, `error`. |
 | `docker/` | Docker Compose file and environment template for the local database |
 | `documentation/` | Design document |
 
@@ -81,6 +81,7 @@ Current tests cover:
 - **Service tests (Testcontainers):** order creation and persistence, ownership (another customer's order is "not found"), role rules, paging and sorting, status changes and delete.
 - **API tests (MockMvc and Testcontainers):** the order endpoints over HTTP with real sessions, including the `201` and `Location` header, ignored client totals, input validation (`400`) and role denials (`403`).
 - **Security tests (MockMvc and Testcontainers):** login with each sample user, only a hash of the token in the database, the same `401` for a wrong password and an unknown user, and `401` for missing, malformed, unknown, expired and logged-out tokens, JWT-shaped tokens, and sessions of deleted users. They also check that a role change applies at once, the `403` body, the permitted and denied roles for each endpoint (`@PreAuthorize`), logout (other sessions of the same user keep working), the public endpoints, and that no HTTP session or cookie is created.
+- **Error handling tests (MockMvc and Testcontainers):** every error case returns the standard JSON body and leaks no internals: validation (`400` with field errors), malformed JSON, bad IDs and sort fields, a missing order or another customer's order (`404`), an invalid status change (`409`), role denial (`403`), missing token (`401`), and framework errors (`405`, `415`, unknown path). Unit tests cover the lost-update (`409`) and unexpected-error (`500`) handlers.
 - **Unit tests:** session settings, the session ID (SHA-256 of the token), and reading the caller from the authenticated user.
 
 All Testcontainers-based tests share one PostgreSQL container, so Docker is started once per test run.
@@ -113,6 +114,22 @@ curl -s -i http://localhost:8080/api/orders/my -H "Authorization: Bearer $TOKEN"
 The API documentation is at `http://localhost:8080/swagger-ui.html` in the `dev` profile: log in through `POST /api/auth/login`, then use the "Authorize" button to paste the token.
 
 > The login and token setup is meant for this assignment only and is **not production-ready authentication** (see section 7 of the design document).
+
+### Error format
+
+Every error response, including `401` and `403`, has the same JSON body:
+
+```json
+{
+  "status": 409,
+  "error": "INVALID_STATUS_TRANSITION",
+  "message": "Cannot change order status from CREATED to DELIVERED",
+  "timestamp": "2026-11-05T09:30:00.123456Z",
+  "path": "/api/orders/5b0a3c1e-8f0e-4a43-9d58-0c8e6d2f7a11/status"
+}
+```
+
+`error` is a stable code to branch on. Validation errors (`VALIDATION_FAILED`, `400`) add a `fieldErrors` list with the field name and message. Unexpected failures return `500` with a generic message. Details are only written to the server log. The full list of codes is in section 8 of the design document.
 
 Full request examples for every endpoint will be added in the documentation step.
 
