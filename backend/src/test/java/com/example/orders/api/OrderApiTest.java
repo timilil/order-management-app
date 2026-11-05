@@ -12,6 +12,9 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 
 import com.example.orders.AbstractIntegrationTest;
 import com.example.orders.domain.Role;
+import java.math.BigDecimal;
+import java.util.List;
+import java.util.Map;
 import java.util.UUID;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
@@ -289,6 +292,117 @@ class OrderApiTest extends AbstractIntegrationTest {
                         .contentType(MediaType.APPLICATION_JSON)
                         .content(body))
                 .andExpect(status().isBadRequest());
+    }
+
+    @Test
+    void ordersAndItemsArePersistedWithServerCalculatedValues() throws Exception {
+        UUID customerId = createUser(Role.CUSTOMER);
+        String orderId = createOrder(customerId);
+
+        Map<String, Object> order = jdbc.queryForMap(
+                "SELECT customer_id, status, total_amount FROM orders WHERE id = ?::uuid", orderId);
+        assertThat(order.get("customer_id")).isEqualTo(customerId);
+        assertThat(order.get("status")).isEqualTo("CREATED");
+        assertThat((BigDecimal) order.get("total_amount")).isEqualByComparingTo("119.97");
+
+        List<Map<String, Object>> items = jdbc.queryForList(
+                "SELECT product_id, quantity, unit_price FROM order_items WHERE order_id = ?::uuid ORDER BY product_id",
+                orderId);
+        assertThat(items).hasSize(2);
+        assertThat(items.get(0).get("product_id")).isEqualTo("PROD-101");
+        assertThat(items.get(0).get("quantity")).isEqualTo(2);
+        assertThat((BigDecimal) items.get(0).get("unit_price")).isEqualByComparingTo("49.99");
+    }
+
+    @Test
+    void failedValidationStoresNothing() throws Exception {
+        UUID customerId = createUser(Role.CUSTOMER);
+
+        mvc.perform(post("/api/orders")
+                        .with(tokenFor(customerId))
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(orderWithItem("0", "10.00")))
+                .andExpect(status().isBadRequest());
+
+        Integer count = jdbc.queryForObject(
+                "SELECT count(*) FROM orders WHERE customer_id = ?", Integer.class, customerId);
+        assertThat(count).isZero();
+    }
+
+    // --- access to other customers' orders ---
+
+    @Test
+    void customerGets404ForAnotherCustomersOrder() throws Exception {
+        String orderId = createOrder(createUser(Role.CUSTOMER));
+
+        mvc.perform(get("/api/orders/{id}", orderId).with(tokenFor(createUser(Role.CUSTOMER))))
+                .andExpect(status().isNotFound())
+                .andExpect(jsonPath("$.error").value("ORDER_NOT_FOUND"));
+    }
+
+    @Test
+    void anotherCustomersOrderNeverAppearsInMyOrders() throws Exception {
+        createOrder(createUser(Role.CUSTOMER));
+
+        mvc.perform(get("/api/orders/my").with(tokenFor(createUser(Role.CUSTOMER))))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.content", hasSize(0)));
+    }
+
+    @Test
+    void anotherCustomersOrderStaysUntouchedByTheirStatusAndDeleteAttempts() throws Exception {
+        String orderId = createOrder(createUser(Role.CUSTOMER));
+        String stranger = "Bearer " + sessionToken(createUser(Role.CUSTOMER));
+
+        mvc.perform(patch("/api/orders/{id}/status", orderId)
+                        .header("Authorization", stranger)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"status\": \"CONFIRMED\"}"))
+                .andExpect(status().isForbidden());
+        mvc.perform(delete("/api/orders/{id}", orderId).header("Authorization", stranger))
+                .andExpect(status().isForbidden());
+
+        assertThat(jdbc.queryForObject("SELECT status FROM orders WHERE id = ?::uuid", String.class, orderId))
+                .isEqualTo("CREATED");
+    }
+
+    // --- status lifecycle ---
+
+    @Test
+    void statusMovesThroughTheWholeLifecycleAndThenStops() throws Exception {
+        String orderId = createOrder(createUser(Role.CUSTOMER));
+        RequestPostProcessor support = tokenFor(createUser(Role.SUPPORT));
+
+        for (String next : new String[] {"CONFIRMED", "SHIPPED", "DELIVERED"}) {
+            mvc.perform(patch("/api/orders/{id}/status", orderId)
+                            .with(support)
+                            .contentType(MediaType.APPLICATION_JSON)
+                            .content("{\"status\": \"" + next + "\"}"))
+                    .andExpect(status().isOk())
+                    .andExpect(jsonPath("$.status").value(next));
+        }
+
+        mvc.perform(patch("/api/orders/{id}/status", orderId)
+                        .with(support)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"status\": \"CREATED\"}"))
+                .andExpect(status().isConflict())
+                .andExpect(jsonPath("$.error").value("INVALID_STATUS_TRANSITION"));
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = {"CREATED", "SHIPPED", "DELIVERED"})
+    void aCreatedOrderCannotMoveToAnythingButConfirmed(String target) throws Exception {
+        String orderId = createOrder(createUser(Role.CUSTOMER));
+
+        mvc.perform(patch("/api/orders/{id}/status", orderId)
+                        .with(tokenFor(createUser(Role.ADMIN)))
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"status\": \"" + target + "\"}"))
+                .andExpect(status().isConflict());
+
+        assertThat(jdbc.queryForObject("SELECT status FROM orders WHERE id = ?::uuid", String.class, orderId))
+                .isEqualTo("CREATED");
     }
 
     // --- delete ---

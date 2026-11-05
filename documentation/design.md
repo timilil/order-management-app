@@ -61,6 +61,8 @@ The brief leaves some things open and allows reasonable assumptions as long as t
 
 ### Testing and operations
 - Integration tests use Testcontainers with the same PostgreSQL version as production, not H2, to avoid dialect differences. This means Docker must be running.
+- The tests are layered. Unit tests (no Spring) cover totals, validation and transitions. Service tests cover business and ownership rules against the real database. MockMvc API tests send real HTTP requests through the real security filter chain, with real session tokens, and check both the responses and the rows in the database. One workflow test uses only the public API and real logins. Every test creates its own users and orders, so tests do not depend on each other or on their order.
+- The integration requirements map to tests as follows: create and retrieve (`OrderApiTest`, `OrderWorkflowTest`), persistence of orders and items (`OrderApiTest`, `DatabaseSchemaTests`), a customer's own orders and denial of another's (`OrderApiTest`, `OrderServiceTest`), role restrictions on status updates and delete (`OrderApiTest`, `SecurityTest`), invalid input and missing orders (`OrderApiTest`, `ErrorHandlingTest`), and a missing token (`SecurityTest`).
 - The Actuator `health` endpoint is exposed for Docker Compose and deployment checks. Other actuator endpoints are disabled.
 
 ### API documentation
