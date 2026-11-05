@@ -28,7 +28,7 @@ The brief leaves some things open and allows reasonable assumptions as long as t
 - There is no separate customer entity. An order's customer ID is simply the logged-in user's ID.
 
 ### Money and order data
-- Prices and totals use `BigDecimal` in Java and `NUMERIC` in PostgreSQL (`NUMERIC(10,2)` for unit prices, `NUMERIC(15,2)` for order totals, sized for the largest valid order of 100 items x quantity 1000 x 99,999,999.99), because `double` can't represent decimal amounts exactly. One currency is assumed, rounding is `HALF_UP`.
+- Prices and totals use `BigDecimal` in Java and `NUMERIC` in PostgreSQL (`NUMERIC(10,2)` for unit prices, `NUMERIC(15,2)` for order totals, sized for the largest valid order of 100 items x quantity 1000 x 99,999,999.99), because `double` can't represent decimal amounts exactly. One currency is assumed. Prices with more than 2 decimal places are rejected rather than rounded, so line totals and order totals are always exact.
 - The client sends `unitPrice` (as in the brief's example) because there is no product catalog. It is validated, and the total is always calculated on the server. A client-supplied total is ignored. A real system would look prices up in a catalog, so this is listed as a limitation.
 - Input limits protect the service: at most 100 items per order, quantity 1 to 1000, unit price 0.01 to 99,999,999.99.
 - The same product may appear on several lines. Each line is stored as sent.
@@ -109,13 +109,22 @@ A layered Spring Boot application, packaged by layer under `com.example.orders`.
 |---------|----------------|
 | `api` | REST controllers and request/response DTOs. Maps HTTP to service calls. No business logic and no entities in responses. |
 | `service` | Business rules: total calculation, ownership checks, status transitions, transaction boundaries. |
-| `domain` | JPA entities (`Order`, `OrderItem`, `User`) and the `OrderStatus` enum with its transition rules. |
+| `domain` | JPA entities (`Order`, `OrderItem`, later `User`), the `OrderStatus` enum with its transition rules, and domain exceptions such as `InvalidStatusTransitionException`. |
 | `repository` | Spring Data JPA repositories. |
 | `security` | Login, JWT issuing and validation, Spring Security filter chain, 401 and 403 handlers. |
 | `config` | OpenAPI configuration and typed configuration properties. |
-| `error` | `ErrorResponse` DTO, custom exceptions and the global `@RestControllerAdvice`. |
+| `error` | `ErrorResponse` DTO, application exceptions such as "order not found", and the global `@RestControllerAdvice`, which also maps the domain exceptions to HTTP responses. |
 
 Why layers: the application is small, the responsibilities are easy to name, and each layer can be tested on its own (domain and service logic with plain unit tests, the API with integration tests).
+
+### Domain model
+- **`OrderStatus`** is an enum that knows its single valid next status (`next()`) and answers `canTransitionTo(target)`. It only describes the lifecycle. Which role may request a transition is an authorization rule, enforced in the security and service layers, so the enum stays free of user and role concepts.
+- **`Order`** is created only through `Order.create(customerId, items, now)`. The factory sets the status to `CREATED`, assigns the owner, and calculates `totalAmount` from the items. There is no way to pass a total in. Status changes go through `changeStatus(target, now)`, which throws `InvalidStatusTransitionException` for anything but the next status and leaves the order untouched. It also updates `updatedAt`. Items are exposed as an unmodifiable list.
+- **`OrderItem`** validates itself on construction (quantity 1 to 1000, unit price 0.01 to 99,999,999.99 with at most 2 decimals, non-blank product ID and name). `lineTotal()` is unit price times quantity.
+- The domain checks these rules a second time, even though the API validates the request first. This keeps invalid orders impossible however the entities are created. The API turns bad input into a `400` response before the domain is reached.
+- Time is passed in as an `Instant` parameter instead of read inside the entities, which keeps the unit tests deterministic.
+- The entities are never returned from the API. Controllers use separate DTOs (section 5).
+- Entities use `@Version` for optimistic locking and `@Enumerated(STRING)` for the status. Hibernate validates these mappings against the Liquibase schema on every startup.
 
 ### Technology baseline
 - Java 17, Spring Boot 3.5, Maven (wrapper included, run with `./mvnw`).
@@ -173,6 +182,7 @@ erDiagram
 - `users`: unique `username`, `role` limited to `CUSTOMER`, `SUPPORT`, `ADMIN`.
 - `orders`: `customer_id` references `users`, `status` limited to the four statuses, `total_amount > 0`. `version` is the optimistic locking column. Indexed on `customer_id` (the "my orders" query) and `created_at` (default sort).
 - `order_items`: `order_id` references `orders` with `ON DELETE CASCADE`, so deleting an order removes its items. `quantity` between 1 and 1000, `unit_price > 0`. Indexed on `order_id`.
+- The JPA entities (`Order`, `OrderItem`) map to these tables. Hibernate runs with `ddl-auto: validate`, so a mismatch between entity and schema stops the application at startup, and the startup test catches it. `Order.items` cascades all operations and removes orphans, which matches the `ON DELETE CASCADE` foreign key.
 - The API validates the same rules first and returns a clear `400`. The database constraints are a safety net, so invalid data can't be stored even if a bug bypasses validation.
 
 ### Migrations
