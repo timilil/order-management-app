@@ -1,6 +1,6 @@
 # Order Management API - Design Document
 
-Status: draft. Sections 1-7 are written. Sections 8-10 are filled in as the implementation progresses.
+Status: complete. The packaging, Compose and CI setup is in section 11.
 
 ## 1. Understanding of the requirements
 
@@ -119,6 +119,20 @@ A layered Spring Boot application, packaged by layer under `com.example.orders`.
 | `config` | The `Clock` bean (replaceable in tests) and the OpenAPI metadata, including the bearer-token security scheme. |
 | `error` | `ErrorResponse` DTO, application exceptions (`OrderNotFoundException`, `InvalidRequestException`), and the global `@RestControllerAdvice`, which also maps the domain exceptions to HTTP responses. |
 
+```mermaid
+flowchart LR
+    Client([Client]) -->|HTTPS, bearer token| Sec[Security filter chain<br/>token check, 401 and 403]
+    Sec --> Ctl[api: controllers<br/>@PreAuthorize, validation, DTOs]
+    Ctl --> Svc[service: OrderService<br/>roles, ownership, transactions]
+    Svc --> Dom[domain: Order, OrderStatus<br/>totals and transition rules]
+    Svc --> Repo[repository: Spring Data JPA]
+    Sec -. session lookup .-> Repo
+    Repo --> DB[(PostgreSQL)]
+    Lb[Liquibase] -->|creates schema on startup| DB
+    Ctl -. exceptions .-> Adv[error: GlobalExceptionHandler<br/>one JSON error format]
+    Svc -. exceptions .-> Adv
+```
+
 Why layers: the application is small, the responsibilities are easy to name, and each layer can be tested on its own (domain and service logic with plain unit tests, the API with integration tests).
 
 ### Domain model
@@ -141,7 +155,7 @@ Why layers: the application is small, the responsibilities are easy to name, and
 - Configuration comes from environment variables (`DB_URL`, `DB_USERNAME`, `DB_PASSWORD`). The base `application.yml` has no defaults for them, so the application fails to start if they are missing.
 - Profiles: `dev` provides fake local defaults and enables Swagger UI. `test` is used by the automated tests. A production run supplies real values through the environment and enables neither.
 - Each profile also selects a Liquibase context (`dev`, `test`, `prod`), which controls whether the fake seed users are created (see section 6).
-- Local database: `docker/docker-compose.yml` starts PostgreSQL 16 on `127.0.0.1:5432` with a named volume. Its credentials come from `docker/.env` (copied from the committed `docker/.env.example`, which holds fake local-only values). The `dev` profile defaults match those values, so no extra setup is needed to run the app locally.
+- Local database (and optionally the application, see section 11): `docker/docker-compose.yml` starts PostgreSQL 16 on `127.0.0.1:5432` with a named volume. Its credentials come from `docker/.env` (copied from the committed `docker/.env.example`, which holds fake local-only values). The `dev` profile defaults match those values, so no extra setup is needed to run the app locally.
 - `open-in-view` is off, so database access stays inside the service layer. Error stack traces and messages are never included in Spring's default error output.
 
 ## 5. API design
@@ -360,7 +374,54 @@ Every error response, whoever produces it, has the `ErrorResponse` JSON body:
 Each `OrderService` method is one transaction, and reads are `readOnly`. Login and logout are not wrapped in a long transaction, because BCrypt is slow on purpose. An exception thrown inside a service method rolls the transaction back, so a rejected status change or a failed create leaves no partial data. Exceptions are turned into HTTP responses after that, in the advice, outside the transaction. The `version` column makes a concurrent change fail with `CONCURRENT_MODIFICATION` instead of silently overwriting it.
 
 ## 9. Design decisions and trade-offs
-TODO.
+
+| Decision | Why | Trade-off |
+|----------|-----|-----------|
+| Money as `BigDecimal` and `NUMERIC(12,2)`, totals calculated on the server | No rounding errors, and a client cannot send a wrong total | Unit prices still come from the client (no product catalog) |
+| Database-backed session token instead of JWT | A token can be revoked at once (logout), nothing sensitive sits in the token, and only its SHA-256 hash is stored. It is also simple to explain | One database lookup per request, and no single sign-on. A real system would use an identity provider |
+| `@PreAuthorize` on controllers and role checks again in the service | The service stays safe if it is called from somewhere else, and the controller rejects early | The rules exist in two places, kept in sync by tests |
+| Another customer's order gives `404`, not `403` | Does not reveal that an order ID exists | A client cannot tell "not yours" from "missing" (intended) |
+| Invalid status change gives `409` | The request is valid but conflicts with the current state, same as a lost update | Some teams prefer `422` |
+| Only the next status is allowed, one linear lifecycle | Simple, predictable and easy to test | No cancellation or going back |
+| Liquibase owns the schema, Hibernate only validates | Reviewable, repeatable migrations, and a mapping mistake fails at startup | Each schema change needs a changeset |
+| Optimistic locking with `@Version` | Concurrent status changes cannot overwrite each other, without holding locks | The loser gets `409` and must retry |
+| Layered packages, separate DTOs, immutable `OrderView` | Clear responsibilities, nothing lazy leaks out of the transaction | A few more classes than a minimal version |
+| One `ErrorResponse` format with stable error codes, generic `500` | Easy for clients, and no internals leak | Detail for debugging is only in the logs |
+| Testcontainers with real PostgreSQL instead of H2 | Tests run against the same engine, constraints and types as production | Docker is needed to run the tests, and they are slower |
+| Paging with a capped size and an allow-list of sort fields | Protects the database and prevents sorting by arbitrary columns | Sorting is limited to four fields |
+| Compose runs the app with the `dev` profile | The demo works in one command, with sample users | Must never be used for a real deployment. The comment in the Compose file says so |
 
 ## 10. Known limitations and future improvements
-Known so far: client-supplied unit prices, no idempotency, no cancellation, a simple database-backed login instead of an external identity provider, no rate limiting or account lockout, a database lookup on every request.
+
+Limitations:
+- Unit prices and product names are supplied by the client. There is no product catalog, stock or price check.
+- No idempotency: a repeated create request (for example after a timeout) creates a second order.
+- No cancellation, no returns, no payment, and the status path is fixed.
+- The login is a simple local one. There is no registration, password change, account lockout or rate limiting, and the sample users exist in dev and test only. Session tokens are looked up in the database on every request.
+- Expired sessions are rejected and removed only when someone logs in, so on a system without logins they stay in the table.
+- Totals use a single currency that is not stored.
+
+Possible improvements, in the order I would do them:
+1. Replace the login with an external identity provider (OpenID Connect) and validate signed tokens, keeping `@PreAuthorize` and the service checks.
+2. Add rate limiting and lockout on login, and a scheduled job that deletes expired sessions.
+3. Add an `Idempotency-Key` header for order creation.
+4. Add a product catalog so prices are read on the server, and store a currency.
+5. Add cancellation as a status with its own rules, and an order history table for audit.
+6. Add metrics and tracing, and structured (JSON) logs with a request ID.
+
+## 11. CI/CD and deployment
+
+### Implemented
+- **Container image:** `backend/Dockerfile` has a build stage (JDK, Maven wrapper, dependencies cached in their own layer) and a runtime stage (JRE only, non-root user, health check, container-aware memory settings).
+- **Docker Compose:** `docker/docker-compose.yml` runs PostgreSQL and the application. The application waits for the database health check, gets its database settings from environment variables, runs with a read-only file system, no Linux capabilities and `no-new-privileges`, and both ports are bound to localhost. PostgreSQL alone can be started with `up -d postgres`.
+- **GitLab CI (`.gitlab-ci.yml`):** `compile`, `test` and `package` jobs. The Maven repository is cached, JUnit reports are published, and the jar is kept as an artifact. The `test` job uses a Docker-in-Docker service for Testcontainers.
+
+### What I would add (not implemented)
+The pipeline would continue after `package` with these stages. Each stage runs only if the previous one passed, and deployment only from the main branch.
+1. **Build and publish the image.** Build with the Dockerfile (Kaniko or Docker-in-Docker), tag it with the commit SHA (and a version tag for releases), and push it to the GitLab container registry. Deploy by tag, never `latest`, so a rollback means redeploying an older tag.
+2. **Scan.** Dependency scanning (for example OWASP Dependency-Check or GitLab Dependency Scanning), image scanning (Trivy) and secret detection.
+3. **Environment-specific configuration and secrets.** The same image runs everywhere. The environment supplies `DB_URL`, `DB_USERNAME` and `DB_PASSWORD`, with no profile set, so there are no sample users and no API docs. Secrets are stored in the GitLab CI/CD variables (masked and protected) or in a secret manager that the platform injects at start. They never go into the repository, the image or the logs. Each environment has its own database and credentials.
+4. **Safe database migrations.** Liquibase runs on application start, which is fine for one instance. With several instances, run it as a separate step before the rollout (a Kubernetes job or a pipeline job), because Liquibase uses a lock and only one runs at a time. Migrations must be backwards compatible with the version that is still running (add columns before using them, drop them one release later, the "expand and contract" pattern), so a rollback of the application does not need a database rollback. Take a backup before production migrations.
+5. **Deploy to a test environment.** Deploy the tagged image automatically on every merge to main (for example with Helm or a Compose file on a test server), and a production deployment behind a manual approval.
+6. **Health check and rollback.** After a deployment, the pipeline calls `/actuator/health` until it reports `UP` or a timeout passes, then runs a few smoke requests (login, create order). The platform's readiness probe keeps traffic away from instances that are not ready. If the check fails, the pipeline redeploys the previous image tag, and a rolling or blue-green rollout keeps the old version running until the new one is healthy.
+7. **Operations.** Logs and metrics go to a central system, with alerts on the error rate and on the health check.
