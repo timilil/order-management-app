@@ -1,6 +1,7 @@
 package com.example.orders;
 
 import com.example.orders.domain.Role;
+import com.example.orders.security.SessionStore;
 import java.util.UUID;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.autoconfigure.web.servlet.AutoConfigureMockMvc;
@@ -28,6 +29,14 @@ public abstract class AbstractIntegrationTest {
 
     @Autowired
     protected JdbcTemplate jdbc;
+
+    @Autowired
+    protected SessionStore sessions;
+
+    /** Starts a real session for the user and returns the bearer token a client would send. */
+    protected String sessionToken(UUID userId) {
+        return sessions.create(userId).value();
+    }
 
     /**
      * Inserts a new user so each test can work with its own customers and not depend on other tests.

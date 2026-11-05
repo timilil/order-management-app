@@ -7,11 +7,6 @@ spring:
   liquibase:
     contexts: dev
 
-app:
-  security:
-    jwt:
-      secret: ${JWT_SECRET:dev-only-secret-change-me-dev-only-secret-change-me}
-
 springdoc:
   api-docs:
     enabled: true

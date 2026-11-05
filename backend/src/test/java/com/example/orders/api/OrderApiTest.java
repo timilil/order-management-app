@@ -2,8 +2,6 @@ package com.example.orders.api;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.hamcrest.Matchers.hasSize;
-import static org.springframework.security.test.web.servlet.request.SecurityMockMvcRequestPostProcessors.csrf;
-import static org.springframework.security.test.web.servlet.request.SecurityMockMvcRequestPostProcessors.jwt;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.delete;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.patch;
@@ -14,7 +12,6 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 
 import com.example.orders.AbstractIntegrationTest;
 import com.example.orders.domain.Role;
-import com.example.orders.security.CurrentUser;
 import java.util.UUID;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
@@ -26,9 +23,9 @@ import org.springframework.test.web.servlet.request.RequestPostProcessor;
 import org.springframework.test.web.servlet.MvcResult;
 
 /**
- * HTTP-level tests of the order endpoints. Tokens are simulated with the {@code jwt()} test helper, so
- * these tests check what the controllers do with a valid identity. Login and the real security filter
- * chain (401 handling) come with the security step.
+ * HTTP-level tests of the order endpoints. Requests carry real session tokens, so they go through the real
+ * security filter chain. Authentication failures are covered in
+ * {@code SecurityTest}.
  */
 class OrderApiTest extends AbstractIntegrationTest {
 
@@ -41,8 +38,13 @@ class OrderApiTest extends AbstractIntegrationTest {
     @Autowired
     MockMvc mvc;
 
-    private static RequestPostProcessor tokenFor(UUID userId, Role role) {
-        return jwt().jwt(j -> j.subject(userId.toString()).claim(CurrentUser.ROLE_CLAIM, role.name()));
+    /** A real session of the user (the role comes from the database), sent the way a client would send it. */
+    private RequestPostProcessor tokenFor(UUID userId) {
+        String token = sessionToken(userId);
+        return request -> {
+            request.addHeader("Authorization", "Bearer " + token);
+            return request;
+        };
     }
 
     private static String orderWithItem(String quantity, String unitPrice) {
@@ -53,8 +55,7 @@ class OrderApiTest extends AbstractIntegrationTest {
 
     private String createOrder(UUID customerId) throws Exception {
         MvcResult result = mvc.perform(post("/api/orders")
-                        .with(csrf())
-                        .with(tokenFor(customerId, Role.CUSTOMER))
+                        .with(tokenFor(customerId))
                         .contentType(MediaType.APPLICATION_JSON)
                         .content(VALID_ORDER))
                 .andExpect(status().isCreated())
@@ -70,8 +71,7 @@ class OrderApiTest extends AbstractIntegrationTest {
         UUID customerId = createUser(Role.CUSTOMER);
 
         mvc.perform(post("/api/orders")
-                        .with(csrf())
-                        .with(tokenFor(customerId, Role.CUSTOMER))
+                        .with(tokenFor(customerId))
                         .contentType(MediaType.APPLICATION_JSON)
                         .content(VALID_ORDER))
                 .andExpect(status().isCreated())
@@ -94,8 +94,7 @@ class OrderApiTest extends AbstractIntegrationTest {
                 .formatted(UUID.randomUUID());
 
         mvc.perform(post("/api/orders")
-                        .with(csrf())
-                        .with(tokenFor(customerId, Role.CUSTOMER))
+                        .with(tokenFor(customerId))
                         .contentType(MediaType.APPLICATION_JSON)
                         .content(body))
                 .andExpect(status().isCreated())
@@ -107,8 +106,7 @@ class OrderApiTest extends AbstractIntegrationTest {
     @Test
     void supportCannotCreateOrders() throws Exception {
         mvc.perform(post("/api/orders")
-                        .with(csrf())
-                        .with(tokenFor(createUser(Role.SUPPORT), Role.SUPPORT))
+                        .with(tokenFor(createUser(Role.SUPPORT)))
                         .contentType(MediaType.APPLICATION_JSON)
                         .content(VALID_ORDER))
                 .andExpect(status().isForbidden());
@@ -117,8 +115,7 @@ class OrderApiTest extends AbstractIntegrationTest {
     @Test
     void createAcceptsTheLargestAllowedValues() throws Exception {
         mvc.perform(post("/api/orders")
-                        .with(csrf())
-                        .with(tokenFor(createUser(Role.CUSTOMER), Role.CUSTOMER))
+                        .with(tokenFor(createUser(Role.CUSTOMER)))
                         .contentType(MediaType.APPLICATION_JSON)
                         .content(orderWithItem("1000", "99999999.99")))
                 .andExpect(status().isCreated())
@@ -167,8 +164,7 @@ class OrderApiTest extends AbstractIntegrationTest {
 
     private void assertCreateRejected(String body) throws Exception {
         mvc.perform(post("/api/orders")
-                        .with(csrf())
-                        .with(tokenFor(createUser(Role.CUSTOMER), Role.CUSTOMER))
+                        .with(tokenFor(createUser(Role.CUSTOMER)))
                         .contentType(MediaType.APPLICATION_JSON)
                         .content(body))
                 .andExpect(status().isBadRequest());
@@ -181,7 +177,7 @@ class OrderApiTest extends AbstractIntegrationTest {
         UUID customerId = createUser(Role.CUSTOMER);
         String orderId = createOrder(customerId);
 
-        mvc.perform(get("/api/orders/{id}", orderId).with(tokenFor(customerId, Role.CUSTOMER)))
+        mvc.perform(get("/api/orders/{id}", orderId).with(tokenFor(customerId)))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.id").value(orderId))
                 .andExpect(jsonPath("$.totalAmount").value(119.97))
@@ -192,7 +188,7 @@ class OrderApiTest extends AbstractIntegrationTest {
     void supportCanReadAnyOrder() throws Exception {
         String orderId = createOrder(createUser(Role.CUSTOMER));
 
-        mvc.perform(get("/api/orders/{id}", orderId).with(tokenFor(createUser(Role.SUPPORT), Role.SUPPORT)))
+        mvc.perform(get("/api/orders/{id}", orderId).with(tokenFor(createUser(Role.SUPPORT))))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.id").value(orderId));
     }
@@ -204,7 +200,7 @@ class OrderApiTest extends AbstractIntegrationTest {
         createOrder(customerId);
         createOrder(createUser(Role.CUSTOMER));
 
-        mvc.perform(get("/api/orders/my").with(tokenFor(customerId, Role.CUSTOMER)))
+        mvc.perform(get("/api/orders/my").with(tokenFor(customerId)))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.content", hasSize(2)))
                 .andExpect(jsonPath("$.content[*].customerId", org.hamcrest.Matchers.everyItem(
@@ -222,7 +218,7 @@ class OrderApiTest extends AbstractIntegrationTest {
         createOrder(customerId);
         String newest = createOrder(customerId);
 
-        mvc.perform(get("/api/orders/my").param("size", "2").with(tokenFor(customerId, Role.CUSTOMER)))
+        mvc.perform(get("/api/orders/my").param("size", "2").with(tokenFor(customerId)))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.content", hasSize(2)))
                 .andExpect(jsonPath("$.content[0].id").value(newest))
@@ -234,14 +230,14 @@ class OrderApiTest extends AbstractIntegrationTest {
     void pageSizeIsCappedAt100() throws Exception {
         mvc.perform(get("/api/orders/my")
                         .param("size", "5000")
-                        .with(tokenFor(createUser(Role.CUSTOMER), Role.CUSTOMER)))
+                        .with(tokenFor(createUser(Role.CUSTOMER))))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.size").value(100));
     }
 
     @Test
     void customerCannotListAllOrders() throws Exception {
-        mvc.perform(get("/api/orders").with(tokenFor(createUser(Role.CUSTOMER), Role.CUSTOMER)))
+        mvc.perform(get("/api/orders").with(tokenFor(createUser(Role.CUSTOMER))))
                 .andExpect(status().isForbidden());
     }
 
@@ -250,7 +246,7 @@ class OrderApiTest extends AbstractIntegrationTest {
         createOrder(createUser(Role.CUSTOMER));
 
         for (Role role : new Role[] {Role.SUPPORT, Role.ADMIN}) {
-            mvc.perform(get("/api/orders").with(tokenFor(createUser(role), role)))
+            mvc.perform(get("/api/orders").with(tokenFor(createUser(role))))
                     .andExpect(status().isOk())
                     .andExpect(jsonPath("$.content").isArray())
                     .andExpect(jsonPath("$.totalElements").isNumber());
@@ -264,8 +260,7 @@ class OrderApiTest extends AbstractIntegrationTest {
         String orderId = createOrder(createUser(Role.CUSTOMER));
 
         mvc.perform(patch("/api/orders/{id}/status", orderId)
-                        .with(csrf())
-                        .with(tokenFor(createUser(Role.SUPPORT), Role.SUPPORT))
+                        .with(tokenFor(createUser(Role.SUPPORT)))
                         .contentType(MediaType.APPLICATION_JSON)
                         .content("{\"status\": \"CONFIRMED\"}"))
                 .andExpect(status().isOk())
@@ -278,8 +273,7 @@ class OrderApiTest extends AbstractIntegrationTest {
         String orderId = createOrder(customerId);
 
         mvc.perform(patch("/api/orders/{id}/status", orderId)
-                        .with(csrf())
-                        .with(tokenFor(customerId, Role.CUSTOMER))
+                        .with(tokenFor(customerId))
                         .contentType(MediaType.APPLICATION_JSON)
                         .content("{\"status\": \"CONFIRMED\"}"))
                 .andExpect(status().isForbidden());
@@ -291,8 +285,7 @@ class OrderApiTest extends AbstractIntegrationTest {
         String orderId = createOrder(createUser(Role.CUSTOMER));
 
         mvc.perform(patch("/api/orders/{id}/status", orderId)
-                        .with(csrf())
-                        .with(tokenFor(createUser(Role.SUPPORT), Role.SUPPORT))
+                        .with(tokenFor(createUser(Role.SUPPORT)))
                         .contentType(MediaType.APPLICATION_JSON)
                         .content(body))
                 .andExpect(status().isBadRequest());
@@ -306,8 +299,7 @@ class OrderApiTest extends AbstractIntegrationTest {
         String orderId = createOrder(customerId);
 
         mvc.perform(delete("/api/orders/{id}", orderId)
-                        .with(csrf())
-                        .with(tokenFor(createUser(Role.ADMIN), Role.ADMIN)))
+                        .with(tokenFor(createUser(Role.ADMIN))))
                 .andExpect(status().isNoContent());
 
         Integer remaining = jdbc.queryForObject(
@@ -320,8 +312,7 @@ class OrderApiTest extends AbstractIntegrationTest {
         String orderId = createOrder(createUser(Role.CUSTOMER));
 
         mvc.perform(delete("/api/orders/{id}", orderId)
-                        .with(csrf())
-                        .with(tokenFor(createUser(Role.SUPPORT), Role.SUPPORT)))
+                        .with(tokenFor(createUser(Role.SUPPORT))))
                 .andExpect(status().isForbidden());
     }
 }

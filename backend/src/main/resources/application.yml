@@ -26,9 +26,8 @@ spring:
 
 app:
   security:
-    jwt:
-      # HS256 signing secret, at least 32 bytes. Provided through the environment, never committed.
-      secret: ${JWT_SECRET}
+    session:
+      # A login session lasts this long from login. The client holds a random token, the database holds its hash.
       expiration-minutes: 30
 
 # Actuator. Only the health endpoint is reachable over HTTP (/actuator/health). 

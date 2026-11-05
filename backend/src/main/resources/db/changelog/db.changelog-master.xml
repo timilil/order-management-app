@@ -9,5 +9,6 @@
     <include file="db/changelog/changes/002-create-orders.xml"/>
     <include file="db/changelog/changes/003-create-order-items.xml"/>
     <include file="db/changelog/changes/004-seed-dev-users.xml"/>
+    <include file="db/changelog/changes/005-create-sessions.xml"/>
 
 </databaseChangeLog>

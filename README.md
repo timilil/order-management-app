@@ -2,7 +2,7 @@
 
 A small REST API for creating and managing orders, built with Java 17 and Spring Boot 3.5. Customers create and view their own orders, support staff view all orders and move them through their lifecycle, and admins can additionally delete orders. Data is stored in PostgreSQL, with schema changes managed by Liquibase.
 
-> **Status: work in progress.** The database layer, project setup, the domain model and the order endpoints (create, read, list, update status, delete) are done. Login and the security configuration, consistent error responses, the container image and the CI pipeline are not implemented yet, so the endpoints cannot be called with real tokens or curl until the security step is finished. Sections marked *(coming)* describe what will be added.
+> **Status: work in progress.** The database layer, project setup, the domain model, the order endpoints and security (login, sessions, logout, role rules with `@PreAuthorize`, 401 and 403 responses) are done. The remaining error responses (for example validation errors and "not found" in the standard JSON format), the container image and the CI pipeline are not implemented yet. Sections marked *(coming)* describe what will be added.
 
 The design, assumptions and trade-offs are in [documentation/design.md](documentation/design.md).
 
@@ -51,7 +51,6 @@ Outside the `dev` profile there are no defaults, and the application refuses to 
 | `DB_URL` | JDBC URL, for example `jdbc:postgresql://localhost:5432/orders` |
 | `DB_USERNAME` | Database user |
 | `DB_PASSWORD` | Database password |
-| `JWT_SECRET` | HS256 signing key for tokens, at least 32 bytes |
 
 Never commit real values. `docker/.env` is ignored by git.
 
@@ -80,7 +79,9 @@ Current tests cover:
 - **Unit tests (no Spring, no database):** order total calculation, item validation (quantity, price, decimals), and every valid and invalid status transition.
 - **Database tests (Testcontainers):** the application starts, Hibernate accepts the entity mappings, and the Liquibase migrations create the expected schema and enforce its constraints (foreign keys, `CHECK` constraints, cascade delete).
 - **Service tests (Testcontainers):** order creation and persistence, ownership (another customer's order is "not found"), role rules, paging and sorting, status changes and delete.
-- **API tests (MockMvc and Testcontainers):** the order endpoints over HTTP with simulated tokens, including the `201` and `Location` header, ignored client totals, input validation (`400`) and role denials (`403`).
+- **API tests (MockMvc and Testcontainers):** the order endpoints over HTTP with real sessions, including the `201` and `Location` header, ignored client totals, input validation (`400`) and role denials (`403`).
+- **Security tests (MockMvc and Testcontainers):** login with each sample user, only a hash of the token in the database, the same `401` for a wrong password and an unknown user, and `401` for missing, malformed, unknown, expired and logged-out tokens, JWT-shaped tokens, and sessions of deleted users. They also check that a role change applies at once, the `403` body, the permitted and denied roles for each endpoint (`@PreAuthorize`), logout (other sessions of the same user keep working), the public endpoints, and that no HTTP session or cookie is created.
+- **Unit tests:** session settings, the session ID (SHA-256 of the token), and reading the caller from the authenticated user.
 
 All Testcontainers-based tests share one PostgreSQL container, so Docker is started once per test run.
 
@@ -90,9 +91,30 @@ All Testcontainers-based tests share one PostgreSQL container, so Docker is star
 docker exec orders-postgres psql -U orders_dev -d orders -c '\dt'
 ```
 
-## API usage *(coming)*
+## API usage *(more examples coming)*
 
-Example requests, login and token usage, and the OpenAPI / Swagger UI address will be added once the endpoints exist.
+With the application running in the `dev` profile, log in with a sample user to get a session token, then send it as a bearer token:
+
+```bash
+TOKEN=$(curl -s -X POST http://localhost:8080/api/auth/login \
+  -H 'Content-Type: application/json' \
+  -d '{"username": "customer1", "password": "dev-password-1"}' | sed -E 's/.*"accessToken":"([^"]+)".*/\1/')
+
+curl -s http://localhost:8080/api/orders/my -H "Authorization: Bearer $TOKEN"
+```
+
+The token is a login session and is valid for 30 minutes. To end it earlier, log out. The token then stops working immediately:
+
+```bash
+curl -s -X POST http://localhost:8080/api/auth/logout -H "Authorization: Bearer $TOKEN"   # 204
+curl -s -i http://localhost:8080/api/orders/my -H "Authorization: Bearer $TOKEN"            # 401
+```
+
+The API documentation is at `http://localhost:8080/swagger-ui.html` in the `dev` profile: log in through `POST /api/auth/login`, then use the "Authorize" button to paste the token.
+
+> The login and token setup is meant for this assignment only and is **not production-ready authentication** (see section 7 of the design document).
+
+Full request examples for every endpoint will be added in the documentation step.
 
 ## CI pipeline *(coming)*
 
@@ -102,6 +124,6 @@ A GitLab CI pipeline (build, test, package) and the notes on extending it will b
 
 The full list is in [documentation/design.md](documentation/design.md), sections 2 and 10. Key points so far:
 
-- Authentication is a local login issuing JWTs. It is a simplified setup, not a replacement for a real identity provider.
+- Authentication is a local login that starts a database-backed session (random token, only its hash stored). Roles are checked with `@PreAuthorize`. It is a simplified setup, not a replacement for a real identity provider.
 - Unit prices are supplied by the client because there is no product catalog. The server always calculates totals.
 - Orders cannot be cancelled, and order creation is not idempotent.

@@ -1,6 +1,6 @@
 # Order Management API - Design Document
 
-Status: draft. Sections 1-6 are written. Sections 7-10 are filled in as the implementation progresses.
+Status: draft. Sections 1-7 are written. Sections 8-10 are filled in as the implementation progresses.
 
 ## 1. Understanding of the requirements
 
@@ -20,10 +20,11 @@ Priorities (from section 9): working core API, correct business rules and persis
 The brief leaves some things open and allows reasonable assumptions as long as they are documented. These are the ones I made.
 
 ### Authentication and identity
-- Users log in with `POST /api/auth/login`. The credentials are checked against a `users` table that stores BCrypt password hashes, and the API returns a short-lived JWT.
-- Every other request is validated by Spring Security from that token. This keeps authentication (who you are) apart from authorization (what you may do).
-- The user ID and role always come from the token, never from the request body.
-- The signing secret is read from an environment variable and is never committed. The `dev` and `test` profiles contain clearly fake, non-production secrets so the project runs out of the box. The base configuration has no default, so a production start without `JWT_SECRET` fails.
+- Users log in with `POST /api/auth/login`. The credentials are checked against a `users` table that stores BCrypt password hashes. A successful login starts a **server-side session** stored in the database and returns a random session token.
+- Every other request must send that token as `Authorization: Bearer <token>`. Spring Security looks the session up in the database on each request and builds the user (ID, role) from the current `users` row. This keeps authentication (who you are) apart from authorization (what you may do).
+- `POST /api/auth/logout` deletes the session, so the token stops working at once.
+- The user ID and role always come from the database for the session, never from the request body or from anything the client can edit.
+- There is no signing secret to manage: the token is a random value that carries no data, and only its SHA-256 hash is stored.
 - Sample users exist only in the `dev` and `test` setups, with obviously fake passwords. Production has none, so the dev setup can't be mistaken for real authentication.
 - There is no separate customer entity. An order's customer ID is simply the logged-in user's ID.
 
@@ -65,7 +66,7 @@ The brief leaves some things open and allows reasonable assumptions as long as t
 ### API documentation
 - The API is documented with OpenAPI 3, generated from the code by `springdoc-openapi`. Swagger UI is served at `/swagger-ui.html` and the raw spec at `/v3/api-docs`.
 - Controllers and DTOs carry annotations (`@Operation`, `@ApiResponse`, `@Schema`) so that each endpoint lists its request and response bodies, the `ErrorResponse` shape and the possible status codes (400, 401, 403, 404, 409).
-- JWT bearer authentication is declared as a security scheme, so a reviewer can log in through `POST /api/auth/login`, paste the token into the Swagger UI "Authorize" dialog, and try the endpoints.
+- Bearer authentication is declared as a security scheme, so a reviewer can log in through `POST /api/auth/login`, paste the token into the Swagger UI "Authorize" dialog, and try the endpoints. Each operation also lists its allowed roles in its summary.
 - Swagger UI and `/v3/api-docs` are enabled in the `dev` and `test` setups only. They are disabled by default in production, because they reveal the full API surface.
 - Generating the docs from code keeps them in sync with the implementation. The curated examples in section 5 and in the README remain the human-readable overview.
 
@@ -80,7 +81,8 @@ The brief leaves some things open and allows reasonable assumptions as long as t
 
 | Operation | Description | Endpoint | Method | CUSTOMER | SUPPORT | ADMIN | Anonymous |
 |-----------|-------------|----------|--------|----------|---------|-------|-----------|
-| login | Exchange credentials for a JWT | `/api/auth/login` | POST | yes | yes | yes | yes |
+| login | Exchange credentials for a session token | `/api/auth/login` | POST | yes | yes | yes | yes |
+| logout | End the session of the token used for the call | `/api/auth/logout` | POST | yes | yes | yes | 401 |
 | createOrder | Create an order for the logged-in user | `/api/orders` | POST | yes (own) | no (403) | yes (own) | 401 |
 | getOrder | Retrieve one order by ID | `/api/orders/{id}` | GET | own only (else 404) | any | any | 401 |
 | getMyOrders | Paged list of the caller's own orders | `/api/orders/my` | GET | yes | yes | yes | 401 |
@@ -109,10 +111,10 @@ A layered Spring Boot application, packaged by layer under `com.example.orders`.
 |---------|----------------|
 | `api` | REST controllers and request/response DTOs. Maps HTTP to service calls. No business logic and no entities in responses. |
 | `service` | Business rules: role and ownership checks, creating orders, status changes, transaction boundaries. Returns immutable `OrderView` objects. |
-| `domain` | JPA entities (`Order`, `OrderItem`, later `User`), the `OrderStatus` and `Role` enums, the transition rules, and domain exceptions such as `InvalidStatusTransitionException`. |
+| `domain` | JPA entities (`Order`, `OrderItem`, `User`, `LoginSession`), the `OrderStatus` and `Role` enums, the transition rules, and domain exceptions such as `InvalidStatusTransitionException`. |
 | `repository` | Spring Data JPA repositories. |
-| `security` | `CurrentUser` (the caller, taken from the token), plus, in the security step, login, JWT issuing and validation, the Spring Security filter chain, and 401 and 403 handlers. |
-| `config` | The `Clock` bean (replaceable in tests), and later OpenAPI configuration and typed configuration properties. |
+| `security` | `CurrentUser` (the caller as the service sees it), sessions (`SessionStore`, `SessionTokenIntrospector`), the Spring Security user (`AppUser`, `AppUserDetailsService`), the filter chain and method security (`SecurityConfig`), and the 401 and 403 handlers. |
+| `config` | The `Clock` bean (replaceable in tests) and the OpenAPI metadata, including the bearer-token security scheme. |
 | `error` | `ErrorResponse` DTO, application exceptions (`OrderNotFoundException`, `InvalidRequestException`), and the global `@RestControllerAdvice`, which also maps the domain exceptions to HTTP responses. |
 
 Why layers: the application is small, the responsibilities are easy to name, and each layer can be tested on its own (domain and service logic with plain unit tests, the API with integration tests).
@@ -128,13 +130,13 @@ Why layers: the application is small, the responsibilities are easy to name, and
 
 ### Technology baseline
 - Java 17, Spring Boot 3.5, Maven (wrapper included, run with `./mvnw`).
-- Spring Web, Spring Data JPA (Hibernate), Bean Validation, Spring Security with the OAuth2 resource server (JWT).
+- Spring Web, Spring Data JPA (Hibernate), Bean Validation, Spring Security (bearer-token support for the session tokens, method security with `@PreAuthorize`).
 - PostgreSQL with Liquibase migrations. Hibernate only validates the schema (`ddl-auto: validate`), Liquibase owns it.
 - `springdoc-openapi` for the API docs, Actuator for the health endpoint.
 - JUnit 5, Spring Security Test and Testcontainers (PostgreSQL 16) for tests.
 
 ### Configuration
-- Configuration comes from environment variables (`DB_URL`, `DB_USERNAME`, `DB_PASSWORD`, `JWT_SECRET`). The base `application.yml` has no defaults for them, so the application fails to start if they are missing.
+- Configuration comes from environment variables (`DB_URL`, `DB_USERNAME`, `DB_PASSWORD`). The base `application.yml` has no defaults for them, so the application fails to start if they are missing.
 - Profiles: `dev` provides fake local defaults and enables Swagger UI. `test` is used by the automated tests. A production run supplies real values through the environment and enables neither.
 - Each profile also selects a Liquibase context (`dev`, `test`, `prod`), which controls whether the fake seed users are created (see section 6).
 - Local database: `docker/docker-compose.yml` starts PostgreSQL 16 on `127.0.0.1:5432` with a named volume. Its credentials come from `docker/.env` (copied from the committed `docker/.env.example`, which holds fake local-only values). The `dev` profile defaults match those values, so no extra setup is needed to run the app locally.
@@ -190,8 +192,8 @@ ADMIN only. Response `204` with no body.
 
 ### Design notes
 - **Separate DTOs.** Controllers use request and response records in `api`. The service returns an immutable `OrderView` that is built inside the transaction, so no lazy-loading or entity state reaches the controller (`open-in-view` is off).
-- **Identity.** Controllers receive the validated token and convert it to a `CurrentUser` (ID from the subject, role from the `role` claim). A token without a valid subject or role is treated as an authentication failure.
-- **Where rules live.** The service enforces roles and ownership for every operation, so the rules hold for any caller. The security filter chain (step 6) adds the same role rules at the HTTP edge, as a first line of defence.
+- **Identity.** Controllers receive the authenticated `AppUser` and convert it to a `CurrentUser` (ID and role). Both come from the `users` row that the session belongs to.
+- **Where rules live.** The service enforces roles and ownership for every operation, so the rules hold for any caller. The controllers repeat the role rules with `@PreAuthorize` (section 7), as a first line of defence that rejects the request before the service runs.
 - **Transactions.** Each service method is one transaction. Reads are `readOnly`. A status change loads the order, applies the domain rule and commits, and the `version` column turns a concurrent change into a conflict instead of a lost update.
 - **Paging.** Items of a page of orders are loaded with one batched query (`default_batch_fetch_size`), not one query per order.
 
@@ -203,6 +205,13 @@ The schema is owned by Liquibase (`backend/src/main/resources/db/changelog`). Hi
 erDiagram
     users ||--o{ orders : places
     orders ||--|{ order_items : contains
+    users ||--o{ sessions : has
+    sessions {
+        varchar token_hash PK
+        uuid user_id FK
+        timestamptz created_at
+        timestamptz expires_at
+    }
     users {
         uuid id PK
         varchar username UK
@@ -234,16 +243,71 @@ erDiagram
 - `users`: unique `username`, `role` limited to `CUSTOMER`, `SUPPORT`, `ADMIN`.
 - `orders`: `customer_id` references `users`, `status` limited to the four statuses, `total_amount > 0`. `version` is the optimistic locking column. Indexed on `customer_id` (the "my orders" query) and `created_at` (default sort).
 - `order_items`: `order_id` references `orders` with `ON DELETE CASCADE`, so deleting an order removes its items. `quantity` between 1 and 1000, `unit_price > 0`. Indexed on `order_id`.
-- The JPA entities (`Order`, `OrderItem`) map to these tables. Hibernate runs with `ddl-auto: validate`, so a mismatch between entity and schema stops the application at startup, and the startup test catches it. `Order.items` cascades all operations and removes orphans, which matches the `ON DELETE CASCADE` foreign key.
+- `sessions`: the SHA-256 hash of each session token (the token itself is never stored), the user, and when it expires. `user_id` references `users` with `ON DELETE CASCADE`, so deleting a user ends their sessions. Indexed on `user_id` and `expires_at`. It is mapped by the `LoginSession` entity and accessed through `SessionRepository` (Spring Data JPA), like the other tables. Expired rows are deleted on later logins.
+- The JPA entities (`Order`, `OrderItem`, `User`, `LoginSession`) map to these tables. Hibernate runs with `ddl-auto: validate`, so a mismatch between entity and schema stops the application at startup, and the startup test catches it. `Order.items` cascades all operations and removes orphans, which matches the `ON DELETE CASCADE` foreign key.
 - The API validates the same rules first and returns a clear `400`. The database constraints are a safety net, so invalid data can't be stored even if a bug bypasses validation.
 
 ### Migrations
-- Migrations are written in Liquibase XML. `db.changelog-master.xml` includes one file per change in `changes/`, in order. Each table has its own changeset (`001` to `003`) with an explicit rollback. Columns and keys use Liquibase's native XML elements (`createTable`, `addForeignKeyConstraint`, `createIndex`). The `CHECK` constraints use a plain `<sql>` element, because Liquibase has no XML element for them.
+- Migrations are written in Liquibase XML. `db.changelog-master.xml` includes one file per change in `changes/`, in order. Each table has its own changeset (`001` to `003`, and `005` for sessions) with an explicit rollback. Columns and keys use Liquibase's native XML elements (`createTable`, `addForeignKeyConstraint`, `createIndex`). The `CHECK` constraints use a plain `<sql>` element, because Liquibase has no XML element for them.
 - `004-seed-dev-users` creates four fake users (`customer1`, `customer2`, `support1`, `admin1`, password `dev-password-1`). It runs only in the `dev` and `test` Liquibase contexts. The base config sets the context to `prod`, because Liquibase runs every changeset when no context is set.
 - Data survives restarts: locally, Postgres stores data in a named Docker volume (`docker compose down` keeps it, `down -v` deletes it).
 
 ## 7. Authentication and authorization
-TODO. Must state clearly that the dev token setup is not production-ready authentication.
+
+> **Not production-ready authentication.** This is a deliberately small, self-contained setup for the assignment. It has no external identity provider, no password policy or account lockout, and no rate limiting. The `dev` and `test` setups contain fake users with a publicly documented password. Section 10 lists what a real deployment would add.
+
+Authentication (who are you) and authorization (what may you do) are separate steps. The approach is **server-side session authentication**: the client holds a random session token, and the server holds the session.
+
+```mermaid
+sequenceDiagram
+    participant C as Client
+    participant A as AuthController / AuthService
+    participant F as Security filter chain
+    participant P as @PreAuthorize
+    participant S as OrderService
+    C->>A: POST /api/auth/login {username, password}
+    A->>A: Spring's DaoAuthenticationProvider checks the BCrypt hash
+    A->>A: create session row (hash of a random token)
+    A-->>C: 200 {accessToken, tokenType, expiresIn}
+    C->>F: GET /api/orders/{id} + Authorization: Bearer token
+    F->>F: authentication: find live session, load the user from the database
+    F->>P: role check from the controller annotation
+    P->>S: CurrentUser(id, role)
+    S->>S: ownership check (customer sees own orders only)
+    S-->>C: 200 order, or 404 if not visible
+```
+
+### Authentication
+- **Login:** `POST /api/auth/login` is checked by Spring Security's `DaoAuthenticationProvider` with our `UserDetailsService` (`AppUserDetailsService`, backed by the `users` table) and a `BCryptPasswordEncoder`. An unknown username and a wrong password produce the same `401`, and the provider spends the same time on both, so response time does not reveal which usernames exist.
+- **Session token:** 256 bits from `SecureRandom`, Base64URL encoded (43 characters). It contains no information. The database stores only its SHA-256 hash (table `sessions`), so a leaked database or backup does not contain usable tokens.
+- **Lifetime:** a session expires a fixed time after login (default 30 minutes, `app.security.session.expiration-minutes`). It is not extended by use.
+- **Every request:** Spring's bearer-token support passes the token to `SessionTokenIntrospector`. It hashes the token, looks up an unexpired session, and loads the user from the `users` table (`AppUser`, with the role as the authority `ROLE_<role>`). If there is no live session or the user is gone, the request gets `401`. Because the user is loaded each time, a role change or a deleted user takes effect on the next request.
+- **Identity:** the user ID and role come only from the database row of the session's user (`CurrentUser`). Nothing from the request body or headers is trusted as identity.
+- **No HTTP session, no cookies:** the filter chain is stateless. "Session" here means our `sessions` table, not the servlet session.
+- **CSRF protection is switched off on purpose.** CSRF attacks rely on the browser sending credentials automatically (cookies). Here the token is sent explicitly in the `Authorization` header, so there is nothing to forge. This would need to be revisited if the token were ever stored in a cookie.
+- **Logout:** `POST /api/auth/logout` (any logged-in user) deletes the session of the token used. From then on that token gets `401`, including a second logout. Other sessions of the same user stay valid, so logging out on one device does not end the others.
+
+### Authorization
+There are three layers, because some rules can be decided from the request alone and others need the data:
+
+1. **Filter chain** (`SecurityConfig`): login, health and the API docs are public. Everything else needs a live session.
+2. **Roles on the controller methods** (`@PreAuthorize`, enabled with `@EnableMethodSecurity`). The matrix in section 3 is declared next to each endpoint, for example `@PreAuthorize("hasRole('ADMIN')")` on delete. The controller class defaults to `isAuthenticated()`. A denied role gets `403`.
+3. **Service layer** (`OrderService`): repeats the role rules, so they still hold if a new controller or job calls the service. It also does the ownership check, which needs the loaded order: a customer asking for an order that is not theirs gets the same `404` as for an ID that does not exist. This cannot be a `@PreAuthorize` rule, because that would answer `403` and reveal that the order exists.
+
+`AppUser` is the principal, so expressions such as `principal.id` are available to `@PreAuthorize` if a rule needs the caller's ID.
+
+Public endpoints: `POST /api/auth/login`, `GET /actuator/health`, and the OpenAPI spec and Swagger UI (which exist only in `dev` and `test`).
+
+**Order of checks.** The controller method is only entered after request parsing and validation, so a caller with the wrong role who also sends an invalid body or a malformed ID gets `400`, not `403`. The `401` for a missing or invalid token always comes first, and no data is returned or changed in either case.
+
+### Error responses from the security layer
+`401` and `403` use the same `ErrorResponse` JSON as all other errors (section 8). The `401` response carries `WWW-Authenticate: Bearer` and the same generic message for a missing, malformed, unknown, expired or logged-out token, so it gives an attacker no hints. The `403` response says only that the operation is not permitted.
+
+### Known limitations
+- Every authenticated request reads the `sessions` and `users` tables (two indexed primary-key lookups). That is fine at this scale, and it is the price of instant logout and instant role changes. A larger system would cache the lookup or use short-lived signed tokens.
+- A session is bound to one database. Several application instances work, because they share the database, but the database is then part of every request's critical path.
+- There is no "log out everywhere" or admin endpoint to end another user's sessions, no refresh or sliding expiry, and no brute-force protection on the login endpoint (no rate limiting or lockout).
+- Passwords are limited to 72 bytes, the input limit of BCrypt.
 
 ## 8. Error handling and transaction boundaries
 TODO. Describe the `ErrorResponse` DTO, the single `@RestControllerAdvice`, and the Spring Security entry point and access-denied handler that reuse the same DTO.
@@ -252,4 +316,4 @@ TODO. Describe the `ErrorResponse` DTO, the single `@RestControllerAdvice`, and 
 TODO.
 
 ## 10. Known limitations and future improvements
-Known so far: client-supplied unit prices, no idempotency, no cancellation, shared-secret JWT instead of an external identity provider, no rate limiting.
+Known so far: client-supplied unit prices, no idempotency, no cancellation, a simple database-backed login instead of an external identity provider, no rate limiting or account lockout, a database lookup on every request.

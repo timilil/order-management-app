@@ -1,8 +1,7 @@
 # Test profile. The datasource comes from Testcontainers (@ServiceConnection).
 app:
   security:
-    jwt:
-      secret: test-only-secret-test-only-secret-test-only-secret
+    session:
       expiration-minutes: 5
 
 spring:
