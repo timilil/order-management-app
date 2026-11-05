@@ -11,7 +11,10 @@ spring:
     hibernate:
       ddl-auto: validate
   liquibase:
-    change-log: classpath:db/changelog/db.changelog-master.yaml
+    change-log: classpath:db/changelog/db.changelog-master.xml
+    # IMPORTANT: if no context is set, Liquibase runs ALL changesets, including the dev/test seed users.
+    # Defaulting to "prod" keeps them out of production. The dev and test profiles override this.
+    contexts: prod
   data:
     web:
       pageable:

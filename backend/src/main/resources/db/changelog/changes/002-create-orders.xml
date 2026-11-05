@@ -1,0 +1,56 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<databaseChangeLog
+        xmlns="http://www.liquibase.org/xml/ns/dbchangelog"
+        xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+        xsi:schemaLocation="http://www.liquibase.org/xml/ns/dbchangelog
+                            http://www.liquibase.org/xml/ns/dbchangelog/dbchangelog-4.31.xsd">
+
+    <!--
+        total_amount is NUMERIC(15,2): the largest valid order is 100 items x quantity 1000 x 99,999,999.99.
+        version supports optimistic locking (JPA @Version).
+    -->
+    <changeSet id="002-create-orders" author="orders">
+        <createTable tableName="orders">
+            <column name="id" type="UUID">
+                <constraints primaryKey="true" primaryKeyName="pk_orders" nullable="false"/>
+            </column>
+            <column name="customer_id" type="UUID">
+                <constraints nullable="false"/>
+            </column>
+            <column name="status" type="VARCHAR(20)">
+                <constraints nullable="false"/>
+            </column>
+            <column name="total_amount" type="NUMERIC(15,2)">
+                <constraints nullable="false"/>
+            </column>
+            <column name="version" type="BIGINT">
+                <constraints nullable="false"/>
+            </column>
+            <column name="created_at" type="TIMESTAMP WITH TIME ZONE">
+                <constraints nullable="false"/>
+            </column>
+            <column name="updated_at" type="TIMESTAMP WITH TIME ZONE">
+                <constraints nullable="false"/>
+            </column>
+        </createTable>
+
+        <addForeignKeyConstraint constraintName="fk_orders_customer"
+                                 baseTableName="orders" baseColumnNames="customer_id"
+                                 referencedTableName="users" referencedColumnNames="id"/>
+
+        <sql>ALTER TABLE orders ADD CONSTRAINT ck_orders_status CHECK (status IN ('CREATED', 'CONFIRMED', 'SHIPPED', 'DELIVERED'))</sql>
+        <sql>ALTER TABLE orders ADD CONSTRAINT ck_orders_total_amount CHECK (total_amount > 0)</sql>
+
+        <createIndex indexName="idx_orders_customer_id" tableName="orders">
+            <column name="customer_id"/>
+        </createIndex>
+        <createIndex indexName="idx_orders_created_at" tableName="orders">
+            <column name="created_at"/>
+        </createIndex>
+
+        <rollback>
+            <dropTable tableName="orders"/>
+        </rollback>
+    </changeSet>
+
+</databaseChangeLog>
