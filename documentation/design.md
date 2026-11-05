@@ -1,6 +1,6 @@
 # Order Management API - Design Document
 
-Status: draft. Sections 1-4 are complete. The remaining sections are filled in as the implementation progresses.
+Status: draft. Sections 1-6 are written. Sections 7-10 are filled in as the implementation progresses.
 
 ## 1. Understanding of the requirements
 
@@ -108,12 +108,12 @@ A layered Spring Boot application, packaged by layer under `com.example.orders`.
 | Package | Responsibility |
 |---------|----------------|
 | `api` | REST controllers and request/response DTOs. Maps HTTP to service calls. No business logic and no entities in responses. |
-| `service` | Business rules: total calculation, ownership checks, status transitions, transaction boundaries. |
-| `domain` | JPA entities (`Order`, `OrderItem`, later `User`), the `OrderStatus` enum with its transition rules, and domain exceptions such as `InvalidStatusTransitionException`. |
+| `service` | Business rules: role and ownership checks, creating orders, status changes, transaction boundaries. Returns immutable `OrderView` objects. |
+| `domain` | JPA entities (`Order`, `OrderItem`, later `User`), the `OrderStatus` and `Role` enums, the transition rules, and domain exceptions such as `InvalidStatusTransitionException`. |
 | `repository` | Spring Data JPA repositories. |
-| `security` | Login, JWT issuing and validation, Spring Security filter chain, 401 and 403 handlers. |
-| `config` | OpenAPI configuration and typed configuration properties. |
-| `error` | `ErrorResponse` DTO, application exceptions such as "order not found", and the global `@RestControllerAdvice`, which also maps the domain exceptions to HTTP responses. |
+| `security` | `CurrentUser` (the caller, taken from the token), plus, in the security step, login, JWT issuing and validation, the Spring Security filter chain, and 401 and 403 handlers. |
+| `config` | The `Clock` bean (replaceable in tests), and later OpenAPI configuration and typed configuration properties. |
+| `error` | `ErrorResponse` DTO, application exceptions (`OrderNotFoundException`, `InvalidRequestException`), and the global `@RestControllerAdvice`, which also maps the domain exceptions to HTTP responses. |
 
 Why layers: the application is small, the responsibilities are easy to name, and each layer can be tested on its own (domain and service logic with plain unit tests, the API with integration tests).
 
@@ -141,7 +141,59 @@ Why layers: the application is small, the responsibilities are easy to name, and
 - `open-in-view` is off, so database access stays inside the service layer. Error stack traces and messages are never included in Spring's default error output.
 
 ## 5. API design
-TODO. Include sample requests and responses for each endpoint, and point to the generated OpenAPI spec and Swagger UI (see "API documentation" in section 2).
+
+All endpoints except login and health need `Authorization: Bearer <token>`. Who may call what is in the matrix in section 3. The generated OpenAPI spec and Swagger UI (see "API documentation" in section 2) list every status code. The samples below use the example from the brief.
+
+### Create an order: `POST /api/orders`
+Request (there is no customer, status or total field; extra fields such as `totalAmount` are ignored):
+```json
+{
+  "items": [
+    {"productId": "PROD-101", "productName": "Keyboard", "quantity": 2, "unitPrice": 49.99},
+    {"productId": "PROD-102", "productName": "Mouse", "quantity": 1, "unitPrice": 19.99}
+  ]
+}
+```
+Response `201 Created`, with `Location: /api/orders/{id}`:
+```json
+{
+  "id": "5b0a3c1e-8f0e-4a43-9d58-0c8e6d2f7a11",
+  "customerId": "11111111-1111-1111-1111-111111111111",
+  "status": "CREATED",
+  "totalAmount": 119.97,
+  "createdAt": "2026-11-05T09:30:00.123456Z",
+  "updatedAt": "2026-11-05T09:30:00.123456Z",
+  "items": [
+    {"productId": "PROD-101", "productName": "Keyboard", "quantity": 2, "unitPrice": 49.99, "lineTotal": 99.98},
+    {"productId": "PROD-102", "productName": "Mouse", "quantity": 1, "unitPrice": 19.99, "lineTotal": 19.99}
+  ]
+}
+```
+Validation (rejected with `400`): at least 1 and at most 100 items; `productId` and `productName` not blank (at most 50 and 200 characters); `quantity` 1 to 1000; `unitPrice` 0.01 to 99,999,999.99 with at most 2 decimals.
+
+### Read orders
+- `GET /api/orders/{id}` returns one order (same shape as above). A customer asking for someone else's order gets `404`, exactly like for an ID that does not exist.
+- `GET /api/orders/my` returns the caller's own orders.
+- `GET /api/orders` returns all orders (SUPPORT, ADMIN).
+
+Both list endpoints return a page:
+```json
+{"content": [ /* orders as above */ ], "page": 0, "size": 20, "totalElements": 42, "totalPages": 3}
+```
+Query parameters: `page` (from 0), `size` (default 20, capped at 100), `sort` as `field,direction`, for example `?sort=totalAmount,asc&size=50`. The default is `createdAt,desc`. Allowed fields: `createdAt`, `updatedAt`, `status`, `totalAmount`. The ID is always added as the last sort key so pages do not overlap when values are equal.
+
+### Update status: `PATCH /api/orders/{id}/status`
+Request `{"status": "CONFIRMED"}`, response `200` with the updated order. Only the next status is accepted (see section 3). Anything else returns `409`.
+
+### Delete: `DELETE /api/orders/{id}`
+ADMIN only. Response `204` with no body.
+
+### Design notes
+- **Separate DTOs.** Controllers use request and response records in `api`. The service returns an immutable `OrderView` that is built inside the transaction, so no lazy-loading or entity state reaches the controller (`open-in-view` is off).
+- **Identity.** Controllers receive the validated token and convert it to a `CurrentUser` (ID from the subject, role from the `role` claim). A token without a valid subject or role is treated as an authentication failure.
+- **Where rules live.** The service enforces roles and ownership for every operation, so the rules hold for any caller. The security filter chain (step 6) adds the same role rules at the HTTP edge, as a first line of defence.
+- **Transactions.** Each service method is one transaction. Reads are `readOnly`. A status change loads the order, applies the domain rule and commits, and the `version` column turns a concurrent change into a conflict instead of a lost update.
+- **Paging.** Items of a page of orders are loaded with one batched query (`default_batch_fetch_size`), not one query per order.
 
 ## 6. Data model
 

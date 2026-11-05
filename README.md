@@ -2,7 +2,7 @@
 
 A small REST API for creating and managing orders, built with Java 17 and Spring Boot 3.5. Customers create and view their own orders, support staff view all orders and move them through their lifecycle, and admins can additionally delete orders. Data is stored in PostgreSQL, with schema changes managed by Liquibase.
 
-> **Status: work in progress.** The database layer, project setup and the domain model (orders, items, status rules) are done. The REST endpoints, security configuration, container image and CI pipeline are not implemented yet. Sections marked *(coming)* describe what will be added.
+> **Status: work in progress.** The database layer, project setup, the domain model and the order endpoints (create, read, list, update status, delete) are done. Login and the security configuration, consistent error responses, the container image and the CI pipeline are not implemented yet, so the endpoints cannot be called with real tokens or curl until the security step is finished. Sections marked *(coming)* describe what will be added.
 
 The design, assumptions and trade-offs are in [documentation/design.md](documentation/design.md).
 
@@ -16,7 +16,7 @@ The design, assumptions and trade-offs are in [documentation/design.md](document
 
 | Path | Contents |
 |------|----------|
-| `backend/` | Spring Boot application (Maven project). Code is in `com.example.orders`, packaged by layer: `api`, `service`, `domain`, `repository`, `security`, `config`, `error`. Only `domain` has content so far. |
+| `backend/` | Spring Boot application (Maven project). Code is in `com.example.orders`, packaged by layer: `api`, `service`, `domain`, `repository`, `security`, `config`, `error`. `security` and `error` are only partly filled in so far. |
 | `docker/` | Docker Compose file and environment template for the local database |
 | `documentation/` | Design document |
 
@@ -79,6 +79,10 @@ Current tests cover:
 
 - **Unit tests (no Spring, no database):** order total calculation, item validation (quantity, price, decimals), and every valid and invalid status transition.
 - **Database tests (Testcontainers):** the application starts, Hibernate accepts the entity mappings, and the Liquibase migrations create the expected schema and enforce its constraints (foreign keys, `CHECK` constraints, cascade delete).
+- **Service tests (Testcontainers):** order creation and persistence, ownership (another customer's order is "not found"), role rules, paging and sorting, status changes and delete.
+- **API tests (MockMvc and Testcontainers):** the order endpoints over HTTP with simulated tokens, including the `201` and `Location` header, ignored client totals, input validation (`400`) and role denials (`403`).
+
+All Testcontainers-based tests share one PostgreSQL container, so Docker is started once per test run.
 
 ## Inspect the database
 

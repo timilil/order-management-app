@@ -5,34 +5,18 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 import java.util.UUID;
 import org.junit.jupiter.api.Test;
-import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.boot.test.context.SpringBootTest;
-import org.springframework.boot.testcontainers.service.connection.ServiceConnection;
 import org.springframework.dao.DataIntegrityViolationException;
-import org.springframework.jdbc.core.JdbcTemplate;
-import org.springframework.test.context.ActiveProfiles;
-import org.testcontainers.containers.PostgreSQLContainer;
-import org.testcontainers.junit.jupiter.Container;
-import org.testcontainers.junit.jupiter.Testcontainers;
 
 /** Verifies that the Liquibase migrations create the expected schema and enforce its constraints. */
-@SpringBootTest
-@Testcontainers
-@ActiveProfiles("test")
-class DatabaseSchemaTests {
+class DatabaseSchemaTests extends AbstractIntegrationTest {
 
     private static final UUID CUSTOMER_ID = UUID.fromString("11111111-1111-1111-1111-111111111111");
 
-    @Container
-    @ServiceConnection
-    static PostgreSQLContainer<?> postgres = new PostgreSQLContainer<>("postgres:16-alpine");
-
-    @Autowired
-    JdbcTemplate jdbc;
-
     @Test
     void seedUsersExistInTestContext() {
-        Integer count = jdbc.queryForObject("SELECT count(*) FROM users", Integer.class);
+        Integer count = jdbc.queryForObject(
+                "SELECT count(*) FROM users WHERE username IN ('customer1', 'customer2', 'support1', 'admin1')",
+                Integer.class);
         assertThat(count).isEqualTo(4);
     }
 

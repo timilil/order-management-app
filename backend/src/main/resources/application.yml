@@ -10,6 +10,9 @@ spring:
     open-in-view: false
     hibernate:
       ddl-auto: validate
+    properties:
+      # Loads the items of a whole page of orders with one query instead of one query per order.
+      hibernate.default_batch_fetch_size: 50
   liquibase:
     change-log: classpath:db/changelog/db.changelog-master.xml
     # IMPORTANT: if no context is set, Liquibase runs ALL changesets, including the dev/test seed users.
